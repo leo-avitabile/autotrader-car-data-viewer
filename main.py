@@ -1,7 +1,8 @@
 # Todo:
 # Fix charts randomly failing to draw - might be related to threading issues, has been better since removing printing
 # Fetch from db in worker
-# Add other scrape options
+# Add other scrape options - some done
+# Add "new car" markers to graph
 
 import sys
 from PySide6 import QtCore, QtWidgets
@@ -25,6 +26,7 @@ MAKE_RE = re.compile('^(.*)\s+\([\d,]\)$')
 SHAPEFILE = pathlib.Path(r'./Distribution/Areas.shp')
 POSTCODEFILE = pathlib.Path(r'./uk-postcodes-master/postcodes.csv')
 
+metadata_keys = ['make', 'model', 'fuel', 'trim', 'colour']
 
 # df with postcode info
 postcode_data = None
@@ -76,6 +78,10 @@ def load_place_and_postcodes() -> pd.DataFrame:
 @lru_cache()
 def location_to_postcode(place_name: str) -> str:
 
+    # quick hack to sort improper loading of geo data
+    if postcode_data is None:
+        return''
+
     postcode_set = set()
     for header in ('town', 'region', 'uk_region'):
         filtered = postcode_data[postcode_data[header] == place_name]
@@ -83,10 +89,11 @@ def location_to_postcode(place_name: str) -> str:
         postcode_set = postcode_set.union(short_postcodes)
 
     if len(postcode_set) > 1:
-        logging.warning(f'{len(postcode_set)} postcodes issue for {place_name}')
+        # logging.warning(f'{len(postcode_set)} postcodes issue for {place_name}')
+        pass
 
     if len(postcode_set) == 0:
-        logging.warning(f'No postcodes for {place_name}')
+        # logging.warning(f'No postcodes for {place_name}')
         return ''
 
     return postcode_set.pop()
@@ -131,8 +138,11 @@ class Worker(QtCore.QThread):
         df['year'] = df['year'].str.extract('(\d{4})').astype(int)  # extract year
 
         # augment with search args
-        df['make'] = self.params['make'].lower()
-        df['model'] = self.params['model'].lower()
+        # df['make'] = self.params['make'].lower()
+        # df['model'] = self.params['model'].lower()
+        for extra_key in metadata_keys:
+            if extra_key not in df.columns and extra_key in self.params:
+                df[extra_key] = self.params[extra_key]
 
         db_manager.append_snapshot(df)
 
@@ -181,7 +191,7 @@ class MyWidget(QtWidgets.QWidget):
         model_label.setText('Model:')
         model_hbox.addWidget(model_label)
         self.model_box = QtWidgets.QLineEdit()
-        self.model_box.setText('Rc F')
+        self.model_box.setText('Rc 300h')
         # self.makes_box.currentTextChanged.connect(self.on_makes_box_changed)
         model_hbox.addWidget(self.model_box)
         self.layout.addLayout(model_hbox)
@@ -211,6 +221,7 @@ class MyWidget(QtWidgets.QWidget):
 
         # tick box to show extra fields
         self.show_extra_fields_cb = QtWidgets.QCheckBox()
+        self.show_extra_fields_cb.setChecked(True)
         self.show_extra_fields_cb.setText('Show Extra Data Fields (Fuel Type, Trim etc)')
         self.show_extra_fields_cb.stateChanged.connect(self.show_extra_fields_cb_state_changed)
         self.layout.addWidget(self.show_extra_fields_cb)
@@ -230,6 +241,7 @@ class MyWidget(QtWidgets.QWidget):
         self.trim_label.setText('Trim')
         trim_hbox.addWidget(self.trim_label)
         self.trim = QtWidgets.QLineEdit()
+        self.trim.setText('F Sport')
         trim_hbox.addWidget(self.trim)
         self.layout.addLayout(trim_hbox)
 
@@ -304,7 +316,8 @@ class MyWidget(QtWidgets.QWidget):
 
             # fetch saved cars of this make/model
             make, model = self.search_params['make'], self.search_params['model']
-            stored_df = pd.DataFrame(db_manager.fetch(make, model))
+            fetch_args = {k: v for k, v in self.search_params.items() if k in metadata_keys}
+            stored_df = pd.DataFrame(db_manager.fetch(**fetch_args))
 
             # generate filter to prune down df to only cars no longer listed
             current_car_hashes = set(self.car_df['hash'])
@@ -312,6 +325,7 @@ class MyWidget(QtWidgets.QWidget):
             stored_cars_not_in_cur_search = pd.DataFrame(stored_df[~stored_car_in_current_search])
             stored_cars_not_in_cur_search = stored_cars_not_in_cur_search[cols_to_keep]
             stored_cars_not_in_cur_search = stored_cars_not_in_cur_search[stored_cars_not_in_cur_search['year'].notnull()]
+            year_price_df = pd.DataFrame(self.car_df[cols_to_keep])
 
             # filter to years specified by current search
             upper_year_filt = stored_cars_not_in_cur_search['year'] <= search_max_year
@@ -319,18 +333,19 @@ class MyWidget(QtWidgets.QWidget):
             stored_cars_not_in_cur_search = stored_cars_not_in_cur_search[upper_year_filt]
             stored_cars_not_in_cur_search = stored_cars_not_in_cur_search[lower_year_filt]
 
-            # prune the current list of cars to the same cols
-            year_price_df = pd.DataFrame(self.car_df[cols_to_keep])
-
             # create a graph and draw scatter plots
             f2 = plt.figure()
-            self.avail_scatter = plt.scatter(year_price_df['year'], year_price_df['price_int'], figure=f2, c=year_price_df['mileage'], cmap='RdYlGn_r', picker=True, marker='o')
+            self.avail_scatter = plt.scatter(
+                year_price_df['year'], year_price_df['price_int'],
+                figure=f2, c=year_price_df['mileage'], cmap='RdYlGn_r', picker=True, marker='o')
 
             # fix a bug where plotting an empty dataframe caused the colourmap to plot between 0 and 1
             if not stored_cars_not_in_cur_search.empty:
-                self.sold_scatter = plt.scatter(stored_cars_not_in_cur_search['year'], stored_cars_not_in_cur_search['price_int'], figure=f2, c=stored_cars_not_in_cur_search['mileage'], cmap='RdYlGn_r', picker=True, marker='x')
+                self.sold_scatter = plt.scatter(
+                    stored_cars_not_in_cur_search['year'], stored_cars_not_in_cur_search['price_int'],
+                    figure=f2, c=stored_cars_not_in_cur_search['mileage'], cmap='RdYlGn_r', marker='x')
 
-            # generate tick marks
+            # generate tick marks to be reverse year order (to show cars losing value)
             min_val = int(year_price_df['year'].min())
             max_val = int(year_price_df['year'].max())
             r = tuple(range(max_val, min_val - 1, -1))
@@ -346,7 +361,16 @@ class MyWidget(QtWidgets.QWidget):
             cbar = plt.colorbar()
             cbar.set_label('Mileage')
 
-            # bind the event for when someone clicks on the graph
+            # I'm too dumb to interpret the data from this :(
+            # f3 = plt.figure()
+            # ax3d = f3.add_subplot(projection='3d')
+            # ax3d.scatter(year_price_df['year'], year_price_df['mileage'], year_price_df['price_int'])
+            # ax3d.set_xlabel('Year')
+            # ax3d.set_ylabel('Miles')
+            # ax3d.set_zlabel('Price')
+
+
+# bind the event for when someone clicks on the graph
             f2.canvas.mpl_connect("pick_event", self.on_pick)
 
             plt.show()
@@ -386,9 +410,8 @@ class MyWidget(QtWidgets.QWidget):
             'max_year': self.to_year.value(),
         }
 
-        # if the extra fields box is ticked
+        # if the extra fields box is ticked grab all the extra info and slap it in
         if self.show_extra_fields_cb.checkState():
-            # grab all the extra info and slap it in
             if self.fuel_type.text():
                 params['fuel'] = self.fuel_type.text()
             if self.trim.text():
@@ -420,6 +443,7 @@ class MyWidget(QtWidgets.QWidget):
             return
 
         # allocate `car_df`
+        # db_manager.append_snapshot(dataframe)  # Hack to allow debugging
         self.car_df = dataframe
 
         # note: One interesting thing about the returned data is the AutoTrader link which I presume is unique

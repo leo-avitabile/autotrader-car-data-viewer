@@ -4,6 +4,11 @@ import csv
 from bs4 import BeautifulSoup
 import traceback
 import cloudscraper
+import logging
+from time import sleep
+
+LOGGER = logging.getLogger(__name__)
+STATUS_CODE_SUCCESS = 200
 
 def get_cars(make="BMW", model="5 SERIES", postcode="SW1A 0AA", radius=1500, min_year=1995, max_year=1995, trim=None, fuel=None, min_power=None, max_power=None, colour=None, include_writeoff="include", max_attempts_per_page=5, verbose=False):
 
@@ -68,23 +73,29 @@ def get_cars(make="BMW", model="5 SERIES", postcode="SW1A 0AA", radius=1500, min
 
 	try:
 
+		# for year in range(min_year, max_year+1):
 		while year <= max_year:
 
+			# populate page specific vars and scrape
 			params["year-from"] = year
 			params["year-to"] = year
 			params["page"] = page
-
 			r = scraper.get(url, params=params)
-			if verbose:
-				print("Year:     ", year)
-				print("Page:     ", page)
-				print("Response: ", r)
+			LOGGER.debug(f"Year: {year}, Page: {page}, Response: {r}")
 
-
+			# # try the scrape up to max_attempts_per_page
+			# for _ in range(max_attempts_per_page):
+			# 	r = scraper.get(url, params=params)
+			# 	if r.status_code == STATUS_CODE_SUCCESS:
+			# 		break
+			# 	sleep(0.5)  # sleep for some random amount of time
+			# else:
+			# 	page += 1
+			# 	continue
 
 			try:
 
-				if r.status_code != 200: # if not successful (e.g. due to bot protection), log as an attempt
+				if r.status_code != STATUS_CODE_SUCCESS: # if not successful (e.g. due to bot protection), log as an attempt
 					attempt = attempt + 1
 					if attempt <= max_attempts_per_page:
 						if verbose:
