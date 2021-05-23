@@ -85,8 +85,23 @@ class DatabaseManager:
 
             # if extras are specified, check and add
             results = []
-            for row in self.current_data[make_lower][model_lower]:  # todo: fix this hack for non-strings
-                if all(row.get(k.lower(), None).lower() == v.lower() for k, v in extras.items()):
+            for row in self.current_data[make_lower][model_lower]:
+                for k, v in extras.items():
+
+                    # try and get the param from the database
+                    val = row.get(k.lower(), None)
+                    if val is None:
+                        # if it does not exist (i.e. none is returned, break)
+                        break
+
+                    # check the value against the filter request
+                    # if they are different then break
+                    val_normalised = val.lower() if type(val) is str else val
+                    if val_normalised != v.lower():
+                        break
+                else:
+                    # no breaks hit
+                    # if all(row.get(k.lower(), None).lower() == v.lower() for k, v in extras.items()):
                     results.append(row)
             return results
         return None
