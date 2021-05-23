@@ -399,7 +399,7 @@ class MyWidget(QtWidgets.QWidget):
 
     @QtCore.Slot()
     def per_year_data_button_clicked(self):
-        if type(self.car_df) is pd.DataFrame:
+        if type(self.car_df) is pd.DataFrame and not self.car_df.empty:
 
             # use these to bound the graph by filtering loaded df
             search_min_year = self.search_params['min_year']
@@ -416,6 +416,9 @@ class MyWidget(QtWidgets.QWidget):
             fetch_args = {k: v for k, v in self.search_params.items() if k in metadata_keys}
             stored_df = pd.DataFrame(db_manager.fetch(**fetch_args))
 
+            if stored_df.empty:
+                return
+
             # count how many cars were dropped in the pruning
             pre_drop_count = len(stored_df)
 
@@ -424,7 +427,6 @@ class MyWidget(QtWidgets.QWidget):
             stored_df = stored_df[upper_year_filt]
             lower_year_filt = stored_df['year'] >= search_min_year
             stored_df = stored_df[lower_year_filt]
-
             # get min/max years in the data are as might be different to the search range
             # use them to generate xticks
             # sometimes returns float so cast to int to ensure comp with
@@ -621,6 +623,11 @@ class MyWidget(QtWidgets.QWidget):
 
     @QtCore.Slot()
     def on_send_to_map_button_clicked(self):
+        # ensure that there is something to map
+        if type(self.car_df) is not pd.DataFrame:
+            self.text.setText('No cars to map!')
+            return
+
         self.send_to_map_button.setText(f'Mapping {len(self.car_df)} cars!')
 
         # get the mean price for each postcode, compute the max, and then the relevant percentages for each
@@ -679,4 +686,4 @@ if __name__ == "__main__":
     widget.resize(800, 600)
     widget.show()
 
-    sys.exit(app.exec_())  # Todo: Fix deprecation warning
+    sys.exit(app.exec())

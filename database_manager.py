@@ -85,8 +85,8 @@ class DatabaseManager:
 
             # if extras are specified, check and add
             results = []
-            for row in self.current_data[make_lower][model_lower]:
-                if all(row.get(k.lower(), None) == v.lower() for k, v in extras.items()):
+            for row in self.current_data[make_lower][model_lower]:  # todo: fix this hack for non-strings
+                if all(row.get(k.lower(), None).lower() == v.lower() for k, v in extras.items()):
                     results.append(row)
             return results
         return None
