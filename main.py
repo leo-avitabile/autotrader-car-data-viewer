@@ -2,15 +2,14 @@
 # Fix charts randomly failing to draw - might be related to threading issues, has been better since removing printing
 # Fetch from db in worker
 # Add other scrape options - some done
-# Add "new car" markers to graph
+# Add "new car" markers to graph - need to rethink the saving strategy to be able to do this
+# Add colour options for graph (e.g. car colour, age of advert, etc)
 
 import sys
 from PySide6 import QtCore, QtWidgets
 import logging
 import re
 import scraper as autotrader_scraper  # a hacked version of https://pypi.org/project/autotrader-scraper/
-import cartopy.crs as ccrs
-import cartopy.io.shapereader as shpreader
 import matplotlib.pyplot as plt
 import pandas as pd
 from PySide6.QtCore import QAbstractTableModel
@@ -19,6 +18,20 @@ from datetime import datetime
 import database_manager
 import webbrowser
 import pathlib
+from functools import partial
+import matplotlib._color_data as mcd
+
+
+supports_mapping = True
+
+# try to import mapping libs, but do not require them
+try:
+    import cartopy.crs as ccrs
+    import cartopy.io.shapereader as shpreader
+except ImportError:
+    cartopy_url = 'https://scitools.org.uk/cartopy/docs/latest/installing.html'
+    logging.warning(f'To use mapping features please install cartopy from: {cartopy_url}')
+    supports_mapping = False
 
 Qt = QtCore.Qt
 
@@ -26,11 +39,16 @@ MAKE_RE = re.compile('^(.*)\s+\([\d,]\)$')
 SHAPEFILE = pathlib.Path(r'./Distribution/Areas.shp')
 POSTCODEFILE = pathlib.Path(r'./uk-postcodes-master/postcodes.csv')
 
-metadata_keys = ['make', 'model', 'fuel', 'trim', 'colour']
+ALL_AUTOTRADER_COLOURS = (
+    'Beige',  'Black',  'Blue',  'Bronze',  'Brown',  'Burgundy',  'Gold',  'Green',  'Grey',  'Magenta',  'Maroon',
+    'Multicolour',  'Navy',  'Orange',  'Pink',  'Purple',  'Red',  'Silver',  'Turquoise',  'White',  'Yellow'
+)
+
+metadata_keys = ('make', 'model', 'fuel', 'trim', 'colour')
+choices = ('Mileage', 'Time since first seen', 'Car Colour')  #  tbd
 
 # df with postcode info
 postcode_data = None
-supports_mapping = True
 
 db_manager = database_manager.DatabaseManager()
 
@@ -157,15 +175,26 @@ class MyWidget(QtWidgets.QWidget):
         # instance variables
         self.car_df = None
         self.search_params = {}
+        self.avail_cars = None
 
         self.layout = QtWidgets.QVBoxLayout(self)
+
+        # self.menu_bar = QtWidgets.QMenuBar(self)
+        #
+        # file_menu = self.menu_bar.addMenu('File')
+        # edit_menu = self.menu_bar.addMenu('Edit')
+        # exit_action = QtWidgets.QWidgetAction(self)
+        # exit_action.setText('Exit')
+        # exit_action.triggered.connect(exit)
+        # file_menu.addAction(exit_action)
+
+        # self.layout.addWidget(self.menu_bar)
 
         self.text = QtWidgets.QLabel("Waiting")  #alignment=QtCore.Qt.AlignCenter
         self.layout.addWidget(self.text)
 
         # these will be set to the result of plotting to distinguish between sold and available cars when clicking
         # see here https://stackoverflow.com/questions/45621544/matplotlib-pick-event-from-multiple-series
-        self.sold_scatter = None
         self.avail_scatter = None
 
         # variables used to store objects from the shapeloader
@@ -252,12 +281,16 @@ class MyWidget(QtWidgets.QWidget):
         colour_hbox.addWidget(self.colour_label)
         self.colour = QtWidgets.QLineEdit()
         colour_hbox.addWidget(self.colour)
+        self.get_colour_info = QtWidgets.QPushButton()
+        self.get_colour_info.setText('Get Colour Info')
+        colour_hbox.addWidget(self.get_colour_info)
+        self.get_colour_info.clicked.connect(self.on_get_colour_info_clicked)
         self.layout.addLayout(colour_hbox)
 
         self.hideable_controls = [
             self.fuel_type_label, self.fuel_type,
             self.trim_label, self.trim,
-            self.colour_label, self.colour
+            self.colour_label, self.colour, self.get_colour_info
         ]
 
         # auto show/hide fields on startup
@@ -287,17 +320,77 @@ class MyWidget(QtWidgets.QWidget):
         if supports_mapping:
             self.layout.addWidget(self.send_to_map_button)
 
+        self.graph_colour_choice = QtWidgets.QComboBox()
+        self.graph_colour_choice.addItems(choices)
+        self.layout.addWidget(self.graph_colour_choice)
+
         self.per_year_data_button = QtWidgets.QPushButton()
         self.per_year_data_button.setText('Show Price By Year')
         self.per_year_data_button.clicked.connect(self.per_year_data_button_clicked)
         self.layout.addWidget(self.per_year_data_button)
 
+        self.compare_cars_button = QtWidgets.QPushButton()
+        self.compare_cars_button.setText('Show Mean Price Difference Between')
+        self.compare_cars_button.clicked.connect(self.compare_cars_button_clicked)
+        self.layout.addWidget(self.compare_cars_button)
+
+        # self.main_menu = QtWidgets.QMenu()
+        # self.main_menu.addAction('test')
+        # self.bar = QtWidgets.QMenuBar(None)
+        # self.bar.addMenu(self.main_menu)
+        # menubar = self.men
+
         self.worker = None
         # self.db_manager = database_manager.DatabaseManager()
+
+    @QtCore.Slot()
+    def compare_cars_button_clicked(self):
+
+        # get data
+        rc300_df = pd.DataFrame(db_manager.fetch('Lexus', 'RC 300h'))
+        is300_df = pd.DataFrame(db_manager.fetch('Lexus', 'IS 300'))
+
+        # initialise plotting
+        f, ax = plt.subplots()
+
+        columns_tup = ['year', 'price_int']
+        rc300_year_price_df = rc300_df[columns_tup]
+        is300_year_price_df = is300_df[columns_tup]
+
+        # compute mean
+        rc_300_mean_price_df = rc300_year_price_df.groupby(['year']).mean()
+        is300_mean_price_df = is300_year_price_df.groupby(['year']).mean()
+
+        diff = rc_300_mean_price_df - is300_mean_price_df
+
+        # plot
+        ax.plot(rc_300_mean_price_df, figure=f, label='RC300h')
+        ax.plot(is300_mean_price_df, figure=f, label='IS300')
+
+        ax2 = ax.twinx()
+        ax2.plot(diff, figure=f, label='Difference', linestyle='--')
+
+        # configure graph and show
+        plt.legend()
+        ax.invert_xaxis()
+
+        plt.xlabel('Year')
+        plt.ylabel('Price (£)')
+
+        plt.show()
+
 
     def show_or_hide_extra_fields(self, show=False):
         for control in self.hideable_controls:
             control.setVisible(show)
+        self.get_colour_info.setVisible(False)   # todo: show when fixed
+
+    @QtCore.Slot()
+    def on_get_colour_info_clicked(self):
+        for colour in ALL_AUTOTRADER_COLOURS:
+            self.colour.setText(colour)
+            # todo: goes waaaaaaaaaaaaaaaay to quick
+            self.fetch_data()
 
     @QtCore.Slot()
     def show_extra_fields_cb_state_changed(self):
@@ -312,43 +405,112 @@ class MyWidget(QtWidgets.QWidget):
             search_min_year = self.search_params['min_year']
             search_max_year = self.search_params['max_year']
 
-            cols_to_keep = ['year', 'price_int', 'mileage']
+            # keep certain cols
+            # some are here because they are used for plotting
+            # some are here because the df will be stored and used for the `pick` event
+            cols_to_keep = ['year', 'price_int', 'mileage', 'days_old', 'colour', 'link', 'hash']
 
             # fetch saved cars of this make/model
-            make, model = self.search_params['make'], self.search_params['model']
+            # note: this currently includes all cars, including the most recent ones
+            # this is because they are added to the db as soon as they are fetched
             fetch_args = {k: v for k, v in self.search_params.items() if k in metadata_keys}
             stored_df = pd.DataFrame(db_manager.fetch(**fetch_args))
 
-            # generate filter to prune down df to only cars no longer listed
+            # count how many cars were dropped in the pruning
+            pre_drop_count = len(stored_df)
+
+            # filter to searched years
+            upper_year_filt = stored_df['year'] <= search_max_year
+            stored_df = stored_df[upper_year_filt]
+            lower_year_filt = stored_df['year'] >= search_min_year
+            stored_df = stored_df[lower_year_filt]
+
+            # get min/max years in the data are as might be different to the search range
+            # use them to generate xticks
+            # sometimes returns float so cast to int to ensure comp with
+            df_min_year = int(min(stored_df['year']))
+            df_max_year = int(max(stored_df['year']))
+            r = tuple(range(df_max_year, df_min_year - 1, -1))
+
+            # compute days old
+            stored_df['datetime'] = stored_df['first_seen'].apply(datetime.fromtimestamp)
+            max_datetime = max(stored_df['datetime'])
+            compute_days_old = lambda x: (max_datetime - x).days
+            stored_df['days_old'] = stored_df['datetime'].apply(compute_days_old)
+
+            # get the users colour choice
+            graph_colour_choice = self.graph_colour_choice.currentText()
+
+            # normalise colour names to be lowercase
+            if graph_colour_choice == 'Car Colour':
+                # there might not be any colour data, check and warn
+                if 'colour' not in stored_df.columns:
+                    self.text.setText('Scrape cars with a colour option to get colour data')
+                    return
+                # otherwise set the colours to the xkcd colours, which has many named colours
+                stored_df['colour'] = 'xkcd:' + stored_df['colour'].str.lower()
+            else:
+                # bit of a hack, there can be lots of nan colours
+                if 'colour' in stored_df.columns:
+                    del stored_df['colour']
+
+            # prune rows with nan fields and extraneous cols
+            cols_to_keep_pruned = [x for x in stored_df.columns if x in cols_to_keep]
+            stored_df = stored_df[cols_to_keep_pruned]
+            stored_df = stored_df.dropna(how='any', axis=0)
+
+            # generate filter to split df into sold and available cars
+            # note: assume sold to mean exists in the database but not in the scrape
             current_car_hashes = set(self.car_df['hash'])
             stored_car_in_current_search = stored_df['hash'].isin(current_car_hashes)
-            stored_cars_not_in_cur_search = pd.DataFrame(stored_df[~stored_car_in_current_search])
-            stored_cars_not_in_cur_search = stored_cars_not_in_cur_search[cols_to_keep]
-            stored_cars_not_in_cur_search = stored_cars_not_in_cur_search[stored_cars_not_in_cur_search['year'].notnull()]
-            year_price_df = pd.DataFrame(self.car_df[cols_to_keep])
 
-            # filter to years specified by current search
-            upper_year_filt = stored_cars_not_in_cur_search['year'] <= search_max_year
-            lower_year_filt = stored_cars_not_in_cur_search['year'] >= search_min_year
-            stored_cars_not_in_cur_search = stored_cars_not_in_cur_search[upper_year_filt]
-            stored_cars_not_in_cur_search = stored_cars_not_in_cur_search[lower_year_filt]
+            # report how many cars were dropped
+            post_drop_count = len(stored_df)
+            total_dropped = pre_drop_count - post_drop_count
+            if total_dropped:
+                logging.warning(f'Dropped {total_dropped} cars while gathering chart data')
+
+            # create separate dfs for the two plotting axes
+            self.avail_cars = pd.DataFrame(stored_df[stored_car_in_current_search])
+            sold_cars = pd.DataFrame(stored_df[~stored_car_in_current_search])
+
+            # if choosing colour, need to do some extra work, this is a bit of a hack
+            if graph_colour_choice == 'Car Colour':
+                # not all colours may map, so prune ones that do not
+                avail_filt = self.avail_cars['colour'].isin(mcd.XKCD_COLORS)
+                sold_filt = sold_cars['colour'].isin(mcd.XKCD_COLORS)
+                # warn of missing colours
+                missing_colours = set(self.avail_cars[~avail_filt]['colour'])
+                if missing_colours:
+                    logging.warning(f'Received colours have no chart mapping: {missing_colours}')
+                # not all colours may map, so prune ones that do not
+                self.avail_cars = self.avail_cars[avail_filt]
+                sold_cars = sold_cars[sold_filt]
 
             # create a graph and draw scatter plots
             f2 = plt.figure()
-            self.avail_scatter = plt.scatter(
-                year_price_df['year'], year_price_df['price_int'],
-                figure=f2, c=year_price_df['mileage'], cmap='RdYlGn_r', picker=True, marker='o')
+            avail_scatter = partial(plt.scatter,
+                                    x=self.avail_cars['year'], y=self.avail_cars['price_int'],
+                                    marker='o', picker=True, edgecolors='black')
+            sold_scatter = partial(plt.scatter,
+                                   x=sold_cars['year'], y=sold_cars['price_int'],
+                                   marker='x')
+
+            # set up the rest of the partial plot configuration
+            if graph_colour_choice == 'Mileage':
+                avail_scatter = partial(avail_scatter, c=self.avail_cars['mileage'], cmap='RdYlGn_r')
+                sold_scatter = partial(sold_scatter, c=sold_cars['mileage'], cmap='RdYlGn_r')
+            elif graph_colour_choice == 'Time since first seen':
+                avail_scatter = partial(avail_scatter, c=self.avail_cars['days_old'], cmap='RdYlGn_r')
+                sold_scatter = partial(sold_scatter, c=sold_cars['days_old'], cmap='RdYlGn_r')
+            elif graph_colour_choice == 'Car Colour':
+                avail_scatter = partial(avail_scatter, c=self.avail_cars['colour'])
+                sold_scatter = partial(sold_scatter, c=sold_cars['colour'])
 
             # fix a bug where plotting an empty dataframe caused the colourmap to plot between 0 and 1
-            if not stored_cars_not_in_cur_search.empty:
-                self.sold_scatter = plt.scatter(
-                    stored_cars_not_in_cur_search['year'], stored_cars_not_in_cur_search['price_int'],
-                    figure=f2, c=stored_cars_not_in_cur_search['mileage'], cmap='RdYlGn_r', marker='x')
-
-            # generate tick marks to be reverse year order (to show cars losing value)
-            min_val = int(year_price_df['year'].min())
-            max_val = int(year_price_df['year'].max())
-            r = tuple(range(max_val, min_val - 1, -1))
+            if not sold_cars.empty:
+                sold_scatter()
+            self.avail_scatter = avail_scatter()
 
             # clean up axes and then show
             ax = f2.get_axes()[0]
@@ -358,10 +520,12 @@ class MyWidget(QtWidgets.QWidget):
             ax.set_ylabel('Price (£)')
             ax.set_title(f'{self.search_params["model"]} Price Per Year')
             ax.grid(axis='y', linestyle='--')
-            cbar = plt.colorbar()
-            cbar.set_label('Mileage')
 
-            # I'm too dumb to interpret the data from this :(
+            if graph_colour_choice != 'Car Colour':
+                cbar = plt.colorbar()
+                cbar.set_label(graph_colour_choice)
+
+            # # I'm too dumb to interpret the data from this :(
             # f3 = plt.figure()
             # ax3d = f3.add_subplot(projection='3d')
             # ax3d.scatter(year_price_df['year'], year_price_df['mileage'], year_price_df['price_int'])
@@ -369,8 +533,7 @@ class MyWidget(QtWidgets.QWidget):
             # ax3d.set_ylabel('Miles')
             # ax3d.set_zlabel('Price')
 
-
-# bind the event for when someone clicks on the graph
+            # bind the event for when someone clicks on the graph
             f2.canvas.mpl_connect("pick_event", self.on_pick)
 
             plt.show()
@@ -381,18 +544,16 @@ class MyWidget(QtWidgets.QWidget):
         # - user clicked an available car
         # - user clicked with left mouse button
         # if not then do nothing
-        if event.artist is self.sold_scatter or event.mouseevent.button != 1: # 1 == left%
+        if event.artist is not self.avail_scatter or event.mouseevent.button != 1: # 1 == left%
             return
 
         # otherwise open a browser window to the advert
         idx = list(event.ind).pop()
-        data = self.car_df.iloc[idx]
+        data = self.avail_cars.iloc[idx]
         logging.debug(f'Clicked link: {data.link}')
         webbrowser.open(data.link)
 
-
-    @QtCore.Slot()
-    def on_get_data_clicked(self):
+    def fetch_data(self):
         self.get_data.setEnabled(False)
         self.table.reset()
 
@@ -424,6 +585,9 @@ class MyWidget(QtWidgets.QWidget):
         self.worker.emitDataFrame.connect(self.update_table, Qt.QueuedConnection)
         self.worker.start()
 
+    @QtCore.Slot()
+    def on_get_data_clicked(self):
+        self.fetch_data()
 
     @QtCore.Slot()
     def update_table(self, dataframe):
@@ -499,14 +663,15 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     # load data at program start
 
-    postcode_data = load_place_and_postcodes()
-    if postcode_data is None:
-        logging.error('Please download postcode data from https://github.com/Gibbs/uk-postcodes')
-        supports_mapping = False
+    if supports_mapping:
+        postcode_data = load_place_and_postcodes()
+        if postcode_data is None:
+            logging.error('Please download postcode data from https://github.com/Gibbs/uk-postcodes')
+            supports_mapping = False
 
-    if not SHAPEFILE.is_file():
-        logging.error('Please download shapefile data from https://www.opendoorlogistics.com/downloads/')
-        supports_mapping = False
+        if not SHAPEFILE.is_file():
+            logging.error('Please download shapefile data from https://www.opendoorlogistics.com/downloads/')
+            supports_mapping = False
     
     app = QtWidgets.QApplication([])
 
@@ -514,4 +679,4 @@ if __name__ == "__main__":
     widget.resize(800, 600)
     widget.show()
 
-    sys.exit(app.exec_())
+    sys.exit(app.exec_())  # Todo: Fix deprecation warning
