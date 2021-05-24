@@ -595,6 +595,7 @@ class MyWidget(QtWidgets.QWidget):
     def update_table(self, dataframe):
 
         # kill the worker thread
+        self.worker.terminate()  # fix threading termination
         self.worker.quit()
         self.worker = None
 
