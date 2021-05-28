@@ -3,16 +3,18 @@
 # Fetch from db in worker
 # Add other scrape options - some done
 # Add "new car" markers to graph - need to rethink the saving strategy to be able to do this
-# Add colour options for graph (e.g. car colour, age of advert, etc)
+# Add start search on enter key
+
 
 import sys
-from PySide6 import QtCore, QtWidgets
 import logging
 import re
 import scraper as autotrader_scraper  # a hacked version of https://pypi.org/project/autotrader-scraper/
 import matplotlib.pyplot as plt
+import matplotlib
 import pandas as pd
-from PySide6.QtCore import QAbstractTableModel
+from PySide2 import QtCore, QtWidgets, QtGui     # Downgraded to PySide2 (Qt5) for proper matplotlib compatibility
+from PySide2.QtCore import QAbstractTableModel
 from functools import lru_cache
 from datetime import datetime
 import database_manager
@@ -20,7 +22,6 @@ import webbrowser
 import pathlib
 from functools import partial
 import matplotlib._color_data as mcd
-
 
 supports_mapping = True
 
@@ -32,6 +33,8 @@ except ImportError:
     cartopy_url = 'https://scitools.org.uk/cartopy/docs/latest/installing.html'
     logging.warning(f'To use mapping features please install cartopy from: {cartopy_url}')
     supports_mapping = False
+
+matplotlib.use('Qt5Agg')
 
 Qt = QtCore.Qt
 
@@ -130,6 +133,9 @@ class Worker(QtCore.QThread):
         self.params = params
         QtCore.QThread.__init__(self)
 
+    # def __del__(self):
+    #     self.wait()
+
     # A QThread is run by calling it's start() function, which calls this run()
     # function in it's own "thread".
     def run(self):
@@ -165,6 +171,7 @@ class Worker(QtCore.QThread):
         db_manager.append_snapshot(df)
 
         # spit out the df to main thread
+        # df_queue.put(df)
         self.emitDataFrame.emit(df)
 
 
@@ -294,7 +301,8 @@ class MyWidget(QtWidgets.QWidget):
         ]
 
         # auto show/hide fields on startup
-        self.show_or_hide_extra_fields(show=self.show_extra_fields_cb.checkState())
+        show_controls = self.show_extra_fields_cb.checkState() == Qt.CheckState.Checked
+        self.show_or_hide_extra_fields(show=show_controls)
 
         # button to get data and progress bar
         hbox3 = QtWidgets.QHBoxLayout()
@@ -378,7 +386,6 @@ class MyWidget(QtWidgets.QWidget):
         plt.ylabel('Price (£)')
 
         plt.show()
-
 
     def show_or_hide_extra_fields(self, show=False):
         for control in self.hideable_controls:
@@ -603,15 +610,17 @@ class MyWidget(QtWidgets.QWidget):
         self.progress_bar.setVisible(False)
         self.get_data.setEnabled(True)
 
+        # allocate `car_df`
+        self.car_df = dataframe
+
         # check to see if we got no data (e.g. 404 error from the scraper)
-        if dataframe.empty:
+        # if dataframe.empty:
+        if self.car_df.empty:
             self.table.reset()
             self.text.setText('Scrape failed, please retry')
             return
 
-        # allocate `car_df`
-        # db_manager.append_snapshot(dataframe)  # Hack to allow debugging
-        self.car_df = dataframe
+        # db_manager.append_snapshot(self.car_df)  # Hack to allow debugging
 
         # note: One interesting thing about the returned data is the AutoTrader link which I presume is unique
         # as such can use it as a key in a db. However, given we don't know if AutoTrader will enforce uniqueness
@@ -687,4 +696,4 @@ if __name__ == "__main__":
     widget.resize(800, 600)
     widget.show()
 
-    sys.exit(app.exec())
+    sys.exit(app.exec_())
