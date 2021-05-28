@@ -62,7 +62,7 @@ class DatabaseManager:
                 hashes[hash_val]['last_seen'] = now
                 for k, v in json.loads(row.to_json()).items():
                     if k not in hashes[hash_val]:
-                        assert type(v) in (int, str)
+                        # assert type(v) in (int, str)  # Todo: Saw a NoneType here once. Maybe fix that
                         hashes[hash_val][k] = v.lower() if type(v) is str else v
             else:
                 logging.debug(f'append_snapshot adding entry: {name}')
