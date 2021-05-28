@@ -1,8 +1,10 @@
 .idea/**
 .vscode/**
 venv/**
+cache/**
 distribution/**
 uk-postcodes-master/**
 *.db
 *.json
 *.whl
+convert.py

@@ -53,7 +53,7 @@ choices = ('Mileage', 'Time since first seen', 'Car Colour')  # tbd
 # df with postcode info
 postcode_data = None
 
-db_manager = database_manager.DatabaseManager()
+db_manager = database_manager.DatabaseManager3()
 
 
 class pandasModel(QAbstractTableModel):
@@ -423,6 +423,9 @@ class MyWidget(QtWidgets.QWidget):
             if stored_df.empty:
                 return
 
+            # count how many cars were dropped in the pruning
+            pre_drop_count = len(stored_df)
+
             # use these to bound the graph by filtering loaded df
             search_min_year = self.search_params['min_year']
             search_max_year = self.search_params['max_year']
@@ -446,9 +449,6 @@ class MyWidget(QtWidgets.QWidget):
                 # if all good then covert to xkcd colours (which has many named colours), then filter to ones that exist
                 stored_df['colour'] = 'xkcd:' + stored_df['colour'].str.lower()
                 stored_df = stored_df[stored_df.colour.isin(mcd.XKCD_COLORS)]
-
-            # count how many cars were dropped in the pruning
-            pre_drop_count = len(stored_df)
 
             # filter to searched years
             stored_df = stored_df[(stored_df['year'] >= search_min_year) & (stored_df['year'] <= search_max_year)]
