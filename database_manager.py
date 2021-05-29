@@ -15,6 +15,8 @@ from json.decoder import JSONDecodeError
 Store objects keyed by the hash.
 """
 
+LOGGER = logging.getLogger(__name__)
+
 
 def string_md5(string_to_hash: str) -> str:
     return md5(string_to_hash.encode('ascii')).hexdigest()
@@ -35,13 +37,13 @@ class DatabaseManager:
                 except json.decoder.JSONDecodeError:
                     pass  # if failure is detected, use uninitalised data
 
-        logging.info(f'{self.__class__.__name__} initialised with {len(self.current_data)} objects')
+        LOGGER.info(f'{self.__class__.__name__} initialised with {len(self.current_data)} objects')
 
     def append_snapshot(self, df: pd.DataFrame) -> None:
         start = datetime.datetime.now()
         # generate hashes for all of the rows in the df
         df['hash'] = df['link'].apply(string_md5)
-        logging.debug(f'append_snapshot called on {len(df)} objects')
+        LOGGER.debug(f'append_snapshot called on {len(df)} objects')
 
         # get the car make/model, convert to lowercase to ensure that weird user input is always filed away safely
         make = set(df['make'].to_list()).pop().lower()
@@ -65,27 +67,27 @@ class DatabaseManager:
             name = row['name']
 
             if hash_val in hashes:
-                logging.debug(f'append_snapshot updating "last_seen" attrib of {name} to {now}')
+                LOGGER.debug(f'append_snapshot updating "last_seen" attrib of {name} to {now}')
                 hashes[hash_val]['last_seen'] = now
                 for k, v in json.loads(row.to_json()).items():
                     if k not in hashes[hash_val]:
                         # assert type(v) in (int, str)  # Todo: Saw a NoneType here once. Maybe fix that
                         hashes[hash_val][k] = v.lower() if type(v) is str else v
             else:
-                logging.debug(f'append_snapshot adding entry: {name}')
+                LOGGER.debug(f'append_snapshot adding entry: {name}')
                 data = json.loads(row.to_json())
                 data['first_seen'] = now
                 self.current_data[make][model].append(data)
                 continue
 
         after_update = datetime.datetime.now()
-        print('Update took', (after_update - start).total_seconds(), 's')
+        LOGGER.debug('Update took', (after_update - start).total_seconds(), 's')
 
         with open(self.path, 'w') as f:
             json.dump(self.current_data, f, indent=2)
 
         after_save = datetime.datetime.now()
-        print('Save took', (after_save - after_update).total_seconds(), 's')
+        LOGGER.debug('Save took', (after_save - after_update).total_seconds(), 's')
 
     def fetch(self, make, model, **extras):
         make_lower = make.lower()
@@ -134,7 +136,7 @@ class DatabaseManager2:
         self.conn = sqlite3.connect(self.DB_FILE_NAME)
         self.cursor = self.conn.cursor()
         df['hash'] = df['link'].apply(string_md5)
-        logging.debug(f'append_snapshot called on {len(df)} objects')
+        LOGGER.debug(f'append_snapshot called on {len(df)} objects')
         df.to_sql('df', self.conn, if_exists='append')
         self.conn.commit()
 
@@ -160,13 +162,13 @@ class DatabaseManager3:
 
         self.directory = pathlib.Path(directory)
 
-        logging.info(f'{self.__class__.__name__} initialised with {len(files)} files')
+        LOGGER.info(f'{self.__class__.__name__} initialised with {len(files)} files')
 
     def append_snapshot(self, df: pd.DataFrame) -> None:
         start = datetime.datetime.now()
         # generate hashes for all of the rows in the df
         df['hash'] = df['link'].apply(string_md5)
-        logging.debug(f'append_snapshot called on {len(df)} objects')
+        LOGGER.debug(f'append_snapshot called on {len(df)} objects')
 
         # get the car make/model, convert to lowercase to ensure that weird user input is always filed away safely
         make = set(df['make'].to_list()).pop().lower()
@@ -203,26 +205,26 @@ class DatabaseManager3:
             name = row['name']
 
             if hash_val in hashes:
-                logging.debug(f'append_snapshot updating "last_seen" attrib of {name} to {now}')
+                LOGGER.debug(f'append_snapshot updating "last_seen" attrib of {name} to {now}')
                 hashes[hash_val]['last_seen'] = now
                 for k, v in json.loads(row.to_json()).items():
                     if k not in hashes[hash_val]:
                         # assert type(v) in (int, str)  # Todo: Saw a NoneType here once. Maybe fix that
                         hashes[hash_val][k] = v.lower() if type(v) is str else v
             else:
-                logging.debug(f'append_snapshot adding entry: {name}')
+                LOGGER.debug(f'append_snapshot adding entry: {name}')
                 data = json.loads(row.to_json())
                 data['first_seen'] = now
                 current_data[model].append(data)
 
         after_update = datetime.datetime.now()
-        print('Update took', (after_update - start).total_seconds(), 's')
+        LOGGER.debug('Update took', (after_update - start).total_seconds(), 's')
 
         with open(self.file_paths_by_brand[make], 'w') as f:
             json.dump(current_data, f, indent=2)
 
         after_save = datetime.datetime.now()
-        print('Save took', (after_save - after_update).total_seconds(), 's')
+        LOGGER.debug('Save took', (after_save - after_update).total_seconds(), 's')
 
     def fetch(self, make, model, **extras):
         make_lower = make.lower()

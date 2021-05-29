@@ -341,6 +341,10 @@ class MyWidget(QtWidgets.QWidget):
         # self.edge_colour_is_car_colour_checkbox.stateChanged.connect(self.show_extra_fields_cb_state_changed)
         self.layout.addWidget(self.edge_colour_is_car_colour_checkbox)
 
+        self.new_cars_only_checkbox = QtWidgets.QCheckBox()
+        self.new_cars_only_checkbox.setText('Show New Cars (0 days old) Only')
+        self.layout.addWidget(self.new_cars_only_checkbox)
+
         self.compare_cars_button = QtWidgets.QPushButton()
         self.compare_cars_button.setText('Show Mean Price Difference Between')
         self.compare_cars_button.clicked.connect(self.compare_cars_button_clicked)
@@ -378,15 +382,18 @@ class MyWidget(QtWidgets.QWidget):
 
         diff = rc_300_mean_price_df - is300_mean_price_df
 
-        # plot
-        ax.plot(rc_300_mean_price_df, figure=f, label='RC300h')
-        ax.plot(is300_mean_price_df, figure=f, label='IS300')
+        # plot and grab line data for legend
+        # https://stackoverflow.com/questions/5484922/secondary-axis-with-twinx-how-to-add-to-legend
+        ln1 = ax.plot(rc_300_mean_price_df, figure=f, label='RC300h')
+        ln2 = ax.plot(is300_mean_price_df, figure=f, label='IS300')
 
         ax2 = ax.twinx()
-        ax2.plot(diff, figure=f, label='Difference', linestyle='--')
+        ln3 = ax2.plot(diff, figure=f, label='Difference', linestyle='--')
 
         # configure graph and show
-        plt.legend()
+        lns = ln1 + ln2 + ln3
+        lbls = [ln.get_label() for ln in lns]
+        plt.legend(lns, lbls)
         ax.invert_xaxis()
 
         plt.xlabel('Year')
@@ -463,6 +470,10 @@ class MyWidget(QtWidgets.QWidget):
             stored_df['datetime'] = stored_df['first_seen'].apply(datetime.fromtimestamp)
             max_datetime = max(stored_df['datetime'])
             stored_df['days_old'] = stored_df['datetime'].apply(lambda x: (max_datetime - x).days)
+
+            # filter to cars added today only if asked to
+            if self.new_cars_only_checkbox.checkState() == Qt.CheckState.Checked:
+                stored_df['days_old'] = stored_df[stored_df.days_old == 0]
 
             # prune cols and rows with nan fields and extraneous cols
             stored_df = stored_df[cols_to_keep].dropna(how='any', axis=0)
@@ -626,7 +637,8 @@ class MyWidget(QtWidgets.QWidget):
         self.send_to_map_button.setText(f'Mapping {len(self.car_df)} cars!')
 
         # get the mean price for each postcode, compute the max, and then the relevant percentages for each
-        grouped_df = self.car_df.groupby(['postcode'])['postcode', 'price_int'].mean()
+        cols = ['postcode', 'price_int']
+        grouped_df = self.car_df.groupby(['postcode'])[cols].mean()
         max_price = grouped_df['price_int'].max()
         grouped_df['pct'] = grouped_df['price_int'] / max_price
 
