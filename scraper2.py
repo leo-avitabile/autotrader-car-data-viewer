@@ -1,14 +1,52 @@
 from functools import partial
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Union
 import cloudscraper
 import logging
 from concurrent.futures import ProcessPoolExecutor
 from time import sleep
 from lxml import etree as et
-import lxml.html
 from io import StringIO
 from urllib.parse import urljoin
+import re
 import json
+
+
+# Compile a re that will name special fields 
+SPEC_RE = re.compile(r"""
+	(?:(?P<reg>\d{4})[ ]\(\d+[ ]\w+\))|							# e.g. 2012
+	(?:(?P<mileage>[\d,]+)[ ]miles)|							# e.g. 1,234 miles
+	(?:(?P<cc>\d+(?:\.\d)?)L)|									# e.g. 2.4L
+	(?:(?P<power>\d+)(?P<power_unit>PS|B?HP|KW))|					# e.g. 230PS
+	(?:(?P<body>Saloon))|										# e.g. Saloon
+	(?:(?P<trans>Automatic|Manual))|							# e.g. Automatic
+	(?:(?P<fuel>Petrol[ ]Hybrid))|								# e.g. Petrol
+	(?:(?P<owners>\d+)[ ]owners)|								# e.g. 2 owners
+	(?:(?P<ulez>ULEZ))|  										# e.g. ULEX
+	(?:(?P<history>(:?Full[ ]Dealership[ ]History))) 			# e.g. Full dealership history
+	""",
+	re.VERBOSE | re.IGNORECASE
+)
+
+PRICE_STR_TO_INT: Callable[[str], int] = lambda p: int(re.sub('[$£,]', '', p))
+
+PS_TO_BHP: Callable[[float], float] = lambda ps: ps * 0.9863
+
+NO_CONVERSION: Callable[[Any], Any] = lambda x: x
+# A dictionary of functions that will convert fetched 
+CONVERTERS: Dict[str, Callable[[Any], Any]] = {
+	'reg': 			lambda v: int(v),
+	'mileage': 		lambda v: int(str(v).replace(',', '')),
+	'cc': 			lambda v: float(v),
+	'power': 		lambda v: float(v),
+	'body': 		NO_CONVERSION,
+	'trans': 		NO_CONVERSION,
+	'fuel': 		NO_CONVERSION,
+	'owners': 		lambda v: int(v),
+	'ulez': 		NO_CONVERSION, 
+	'history': 		NO_CONVERSION,
+	'power_unit': 	NO_CONVERSION,
+}
+
 
 LOGGER = logging.getLogger(__name__)
 STATUS_CODE_SUCCESS = 200
@@ -22,7 +60,12 @@ def scrape(year: int, others: Dict[str, Any]):
 	LOGGER.info('year = %d', year)
 
 	# root url
-	base_url = "https://www.autotrader.co.uk/results-car-search"
+	base_url = "https://www.autotrader.co.uk"
+	base_search_url = urljoin(base_url, "results-car-search")
+	
+	parser = et.HTMLParser()
+
+	car_data: List[Dict[Any, Any]] = []
 
 	# populate page specific vars and scrape
 	params = dict(others)
@@ -31,9 +74,8 @@ def scrape(year: int, others: Dict[str, Any]):
 	params["page"] = page = 1
 
 	# the page on which the scrape will end
+	# it will be set during the script to a dict fetched for the page
 	final_page = 1
-	
-	parser = et.HTMLParser()
 
 	# sometimes cloudscraper can return a 404, even for a good search
 	# it is unclear for a quick poke around whether there is any way to 
@@ -48,7 +90,7 @@ def scrape(year: int, others: Dict[str, Any]):
 		scraper = cloudscraper.create_scraper()
 
 		# issue request and see if all good
-		resp = scraper.get(base_url, params=params)
+		resp = scraper.get(base_search_url, params=params)
 		LOGGER.debug('Attempt %d, status = %d', attempt, resp.status_code)
 
 		# if the request was a success, attempt to grab the info per car
@@ -60,47 +102,99 @@ def scrape(year: int, others: Dict[str, Any]):
 			# grab the element containing the info about all links on the page
 			nav_info_elem = html.find('.//var[@id="fpa-navigation"]')
 			nav_info_dict = json.loads(nav_info_elem.attrib.get('fpa-navigation', '{}'))
+			# TODO: Handle failure to get this number better
+			final_page = nav_info_dict.get('totalPages', page)
+			LOGGER.info('Info dict says search has %d pages', final_page)
 
-			# pull out pertinent info
-			current_page = nav_info_dict['currentPage']
-			total_pages = nav_info_dict['totalPages']
-			car_url_data: List[Dict[str, str]] = nav_info_dict['fpaNavigation'][0]['shortAdvertForFPANavigation']
+			# # pull out pertinent info
+			# current_page = nav_info_dict['currentPage']
+			# total_pages = nav_info_dict['totalPages']
+			# car_url_data: List[Dict[str, str]] = nav_info_dict['fpaNavigation'][0]['shortAdvertForFPANavigation']
 
-			LOGGER.info('Got %d listings on page %d/%d', len(car_url_data), current_page, total_pages)
+			# LOGGER.info('Got %d listings on page %d/%d', len(car_url_data), current_page, total_pages)
 
-			# fetch the data for each of the cars on the page
-			for car_url_datum in car_url_data:
+			# # fetch the data for each of the cars on the page
+			# for car_url_datum in car_url_data:
 
-				id = car_url_datum['id']
-				url = car_url_datum['fpaUrl']
-				full_url = urljoin(base_url, url)
-				LOGGER.info('Finding info for id %s at %s', id, full_url)
+			# 	id = car_url_datum['id']
+			# 	url = car_url_datum['fpaUrl']  # note this has unicode chars, so  
+			# 	full_url = urljoin("https://www.autotrader.co.uk", url)
+			# 	LOGGER.info('Finding info for id %s at %s', id, full_url)
+
+			# 	car_data: List[str] = []
+
+			# 	# scrape car info
+			# 	for attempt2 in range(MAX_ATTEMPTS):
+
+			# 		resp2 = scraper.get(full_url)
 
 
-			# car_lis = html.xpath('.//li[@class="search-page__result"]')
-			# LOGGER.info('Got %d adverts', len(car_lis))
 
-			# # iterate over the found cars, grab the data from them
-			# for car_li in car_lis:
+			# 		if resp2.status_code == STATUS_CODE_SUCCESS:
 
-			# 	# the li itself contains some interesting info, fetch that first
-			# 	LOGGER.info(car_li)
-			# 	attrs = dict(car_li.attrib)
+			# 			resp2_content_str = resp2.content.decode('utf-8')
+			# 			html2 = et.parse(StringIO(resp2_content_str), parser)
+						
+			# 			car_info_elems = html2.xpath('.//ul[@data-gui="key-specs-section"]/li')
 
-			# 	# get the article and contained within the li
-			# 	# use it to decide if the entry is an ad
-			# 	advert_article = car_li.find('article')
-			# 	if advert_article.attrib.get("data-standout-type", None) == "promoted":
-			# 		LOGGER.debug('Ignoring advert for id %s', attrs.get('id', 1234))
-			# 		continue
+						
+			# 			car_data.append( x.text for x in car_info_elems )
 
-			# 	# get the link to the actual page
-			# 	advert_a = advert_article.find('a')
-			# 	advert_path = advert_a.attrib['href']
-			# 	full_advert_path = urljoin(url, advert_path)
 
-			# 	LOGGER.debug('Advert path is: %s', full_advert_path)
+			car_lis = html.xpath('.//li[@class="search-page__result"]')
+			LOGGER.info('Got %d adverts', len(car_lis))
 
+			# iterate over the found cars, grab the data from them
+			for car_li in car_lis:
+
+				# get the article and contained within the li
+				# use it to decide if the entry is an ad
+				advert_article = car_li.find('article')
+				if advert_article.attrib.get("data-standout-type", None) == "promoted":
+					LOGGER.debug('Ignoring advert for id %s', attrs.get('id', 1234))
+					continue
+
+				# get the link to the actual page
+				advert_a = advert_article.find('a')
+				advert_path = advert_a.attrib['href']
+				full_advert_path = urljoin(base_url, advert_path)
+				LOGGER.debug('Advert path is: %s', full_advert_path)
+
+				# the li itself contains some interesting info, fetch that first
+				attrs = dict(car_li.attrib)
+
+				# get the price
+				price_str = car_li.find('.//div[@class="product-card-pricing__price"]/span').text
+				price = PRICE_STR_TO_INT(price_str)
+				LOGGER.debug('Price is %d', price)
+
+				# get the title
+				title = car_li.find('.//h3[@class="product-card-details__title"]').text
+				title = str(title).strip()
+				LOGGER.debug('Title is %s', title)
+
+				# fetch key specs for the advert card
+				key_specs = car_li.xpath('.//ul[@class="listing-key-specs"]/li/text()')
+
+				# then gather them into a dict, converting the types if sensible
+				car_key_spec_dict: Dict[str, Union[str, int]] = {
+					'title': title,
+					'price': price
+				}
+				for key_spec in key_specs:
+
+					# try and match, but fail gracefully
+					m = SPEC_RE.fullmatch(key_spec)
+					if m is None:
+						LOGGER.warning('Did not match a spec for "%s"', key_spec)
+						continue 
+					
+					# if there was a match, grab the converter
+					LOGGER.debug('%s matches %s', key_spec, m.lastgroup)
+					conv = CONVERTERS.get(m.lastgroup, NO_CONVERSION)
+					car_key_spec_dict[m.lastgroup] = conv(m.groupdict()[m.lastgroup])
+
+				LOGGER.debug('Final dict: %s', car_key_spec_dict)
 
 
 			break
