@@ -1,35 +1,38 @@
-from functools import partial
-from tkinter import E
-from typing import Any, Callable, Dict, List, Union
-import cloudscraper
 import logging
+from functools import partial
+from typing import Any, Callable, Dict, List, Union
+
+import cloudscraper
+
 from concurrent.futures import ThreadPoolExecutor
-from time import sleep
-from lxml import etree as et
-from io import StringIO
-from urllib.parse import urljoin
-import re
 import json
+import re
+from io import StringIO
+from itertools import chain
+from urllib.parse import urljoin
 
+from lxml import etree as et
 
-# Compile a re that will name special fields 
+'''This RE captures information from the advert and categorises it using the groupname''' 
 SPEC_RE = re.compile(r"""
-	(?:(?P<reg>\d{4})(?:[ ]\(\d+[ ]\w+\))?)|							# e.g. 2012
-	(?:(?P<mileage>[\d,]+)[ ]miles)|							# e.g. 1,234 miles
-	(?:(?P<cc>\d+(?:\.\d+)?)L)|									# e.g. 2.4L
-	(?:(?P<power>\d+((PS)|(BHP)|(HP)|(KW))))|						# e.g. 230PS
-	(?:(?P<body>((Saloon)|(Hatchback)|(Estate))))|										# e.g. Saloon
-	(?:(?P<trans>((Automatic)|(Manual))))|							# e.g. Automatic
-	(?:(?P<fuel>((Petrol[ ]Hybrid)|(Petrol)|(Diesel)|(Bi[ ]Fuel))))|								# e.g. Petrol
-	(?:(?P<owners>\d+)[ ]owners?)|								# e.g. 2 owners
-	(?:(?P<ulez>ULEZ))|  										# e.g. ULEX
-	(?:(?P<history>(:?[\w ]+History[\w ]*))) 	# e.g. Full dealership history
+	(?:(?P<reg>\d{4})(?:[ ]\(\d+[ ]\w+\))?)|								# e.g. 2012
+	(?:(?P<mileage>[\d,]+)[ ]miles)|										# e.g. 1,234 miles
+	(?:(?P<cc>\d+(?:\.\d+)?)L)|												# e.g. 2.4L
+	(?:(?P<power>\d+((PS)|(BHP)|(HP)|(KW))))|								# e.g. 230PS
+	(?:(?P<body>((Saloon)|(Hatchback)|(Estate)|(Convertible))))|			# e.g. Saloon
+	(?:(?P<trans>((Automatic)|(Manual))))|									# e.g. Automatic
+	(?:(?P<fuel>((Petrol.*Hybrid)|(Petrol)|(Diesel)|(Bi[ ]Fuel))))|			# e.g. Petrol
+	(?:(?P<owners>\d+)[ ]owners?)|											# e.g. 2 owners
+	(?:(?P<ulez>ULEZ))|  													# e.g. ULEX
+	(?:(?P<history>(:?[\w ]+History[\w ]*))) 								# e.g. Full dealership history
 	""",
 	re.VERBOSE | re.IGNORECASE
 )
 
-
+'''This RE splits typical power specifications (such as 220BHP) into (200, "BHP")'''
 POWER_RE = re.compile(r'(?P<power>\d+)\s*(?P<unit>[A-Z]+)', re.IGNORECASE)
+
+'''A dict with conversion rates to BHP'''
 POWER_TO_BHP = {
 	'PS': 0.9863,
 	'BHP': 1,
@@ -50,41 +53,54 @@ def power_string_to_bhp(power_string: str) -> int:
 		power = gd['power']
 		unit = str(gd['unit']).upper()
 		factor = POWER_TO_BHP.get(unit, 0)
+		# note the conversion to float first to prevent e.g. int('123.4') causing an error
 		value = int(float(power) * factor)
 		return value
 	return 0
 
+'''This lambda converts a price string (e.g. £1,234) into an int (e.g. 1234)'''
+PRICE_STR_TO_INT: Callable[[str], int] = lambda p: int(re.sub('[£,]', '', p))
 
-PRICE_STR_TO_INT: Callable[[str], int] = lambda p: int(re.sub('[$£,]', '', p))
+'''This lambda takes an objects, converts it to a string, rips off any whitespace, and returns it'''
+CONVERT_TO_STR_AND_STRIP: Callable[[Any], Any] = lambda x: str(x).strip()
 
-PS_TO_BHP: Callable[[float], float] = lambda ps: ps * 0.9863
-
-NO_CONVERSION: Callable[[Any], Any] = lambda x: str(x).strip()
-
-# A dictionary of functions that will convert fetched 
+'''A dictionary of functions that will convert fetched data'''
 CONVERTERS: Dict[str, Callable[[Any], Any]] = {
 	'reg': 			lambda v: int(v),
 	'mileage': 		lambda v: int(str(v).replace(',', '')),
 	'cc': 			lambda v: float(v),
 	'power': 		power_string_to_bhp,
-	'body': 		NO_CONVERSION,
-	'trans': 		NO_CONVERSION,
-	'fuel': 		NO_CONVERSION,
+	'body': 		CONVERT_TO_STR_AND_STRIP,
+	'trans': 		CONVERT_TO_STR_AND_STRIP,
+	'fuel': 		CONVERT_TO_STR_AND_STRIP,
 	'owners': 		lambda v: int(v),
-	'ulez': 		NO_CONVERSION, 
-	'history': 		NO_CONVERSION,
+	'ulez': 		CONVERT_TO_STR_AND_STRIP, 
+	'history': 		CONVERT_TO_STR_AND_STRIP,
 }
 
 
 LOGGER = logging.getLogger(__name__)
-STATUS_CODE_SUCCESS = 200
 
+'''An alias for the http code 200 (i.e. OK)'''
+HTTP_OK = 200
+
+'''The number of attempts to scrape a given page'''
 MAX_ATTEMPTS = 3
 
 logging.basicConfig(level='INFO')
 
+def get_car_data() -> Dict[str, Union[int, str]]:
+	pass
+
 
 def scrape(year: int, others: Dict[str, Any]):
+	'''Responsible for issuing the http request, reading the response, and 
+	controlling what gets pulled for the main "search" page of AutoTrader for a given year.
+	It is intended to be a helper function 
+	year: The year  '''
+
+	LOGGER.info('%d', year)
+
 	# root urls
 	base_url = "https://www.autotrader.co.uk"
 	base_search_url = urljoin(base_url, "results-car-search")
@@ -111,9 +127,6 @@ def scrape(year: int, others: Dict[str, Any]):
 		# decide if retrying is a good idea or not, so just try a few times
 		for attempt in range(MAX_ATTEMPTS):
 
-			# if not the first attempt, then sleep
-			sleep( attempt * 0.1 )
-
 			# create the scraper each time to avoid potentially continuous
 			# 404s that can occur when re-using the scraper object
 			scraper = cloudscraper.create_scraper()
@@ -124,7 +137,7 @@ def scrape(year: int, others: Dict[str, Any]):
 			LOGGER.info('Scrape page %d, attempt %d, status = %d', page, attempt, resp.status_code)
 
 			# if the request was a failure, retry by jumping to the start of the loop
-			if resp.status_code != STATUS_CODE_SUCCESS:
+			if resp.status_code != HTTP_OK:
 				continue
 
 			# otherwise load the html into lxml for processing
@@ -156,10 +169,10 @@ def scrape(year: int, others: Dict[str, Any]):
 					continue
 
 				# get the link to the actual page
-				advert_a = advert_article.find('a')
-				advert_path = advert_a.attrib['href']
+				advert_path = advert_article.find('a').attrib['href']
 				full_advert_path = urljoin(base_url, advert_path)
-				LOGGER.debug('Advert path is: %s', full_advert_path)
+				truncated_advert_path, _ = str(full_advert_path).split('?', maxsplit=1)
+				LOGGER.debug('Advert path is: %s', truncated_advert_path)
 
 				# get the price
 				price_str = car_li.find('.//div[@class="product-card-pricing__price"]/span').text
@@ -168,18 +181,18 @@ def scrape(year: int, others: Dict[str, Any]):
 
 				# get the title
 				title = car_li.find('.//h3[@class="product-card-details__title"]').text
-				title = NO_CONVERSION(title)
+				title = CONVERT_TO_STR_AND_STRIP(title)
 				LOGGER.debug('Title is %s', title)
 
-				# fetch key specs for the advert card
-				key_specs = car_li.xpath('.//ul[@class="listing-key-specs"]/li/text()')
-
-				# then gather them into a dict, converting the types if sensible
+				# then gather this info 
 				car_key_spec_dict: Dict[str, Union[str, int]] = {
 					'title': title,
-					'price': price
+					'price': price,
+					'url': truncated_advert_path
 				}
-				for key_spec in key_specs:
+
+				# iterate over keys specs and add to dict
+				for key_spec in car_li.xpath('.//ul[@class="listing-key-specs"]/li/text()'):
 
 					# try and match, but fail gracefully
 					m = SPEC_RE.fullmatch(key_spec)
@@ -187,9 +200,9 @@ def scrape(year: int, others: Dict[str, Any]):
 						LOGGER.warning('Did not match a spec for "%s"', key_spec)
 						continue 
 					
-					# if there was a match, grab the converter
+					# if there was a match, convert the raw text, add to dict
 					LOGGER.debug('%s matches %s', key_spec, m.lastgroup)
-					conv = CONVERTERS.get(m.lastgroup, NO_CONVERSION)
+					conv = CONVERTERS.get(m.lastgroup, CONVERT_TO_STR_AND_STRIP)
 					car_key_spec_dict[m.lastgroup] = conv(m.groupdict()[m.lastgroup])
 
 				car_data.append(car_key_spec_dict)
@@ -209,12 +222,12 @@ def scrape(year: int, others: Dict[str, Any]):
 
 
 def get_cars(
-	make: str = "Ford", 
-	model: str = "Fiesta", 
+	make: str = "Ariel", 
+	model: str = "Atom", 
 	postcode: str = "GL503PY", 
 	radius: int=1500, 
 	min_year: int=2010, 
-	max_year: int=2010,
+	max_year: int=2022,
 	max_miles: int=None, 
 	trim: str=None, 
 	fuel=None, 
@@ -267,7 +280,6 @@ def get_cars(
 	with ThreadPoolExecutor(max_workers=4) as pool:
 		res = pool.map(partial_scrape, range(min_year, max_year + 1))
 
-	from itertools import chain
 	combined_res = chain(*res)
 
 	for r in combined_res:
