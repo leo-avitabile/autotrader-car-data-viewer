@@ -13,6 +13,10 @@ from urllib.parse import urljoin
 
 from lxml import etree as et
 
+# root urls
+BASE_URL = "https://www.autotrader.co.uk"
+BASE_SEARCH_URL = urljoin(BASE_URL, "results-car-search")
+
 '''This RE captures information from the advert and categorises it using the groupname''' 
 SPEC_RE = re.compile(r"""
 	(?:(?P<reg>\d{4})(?:[ ]\(\d+[ ]\w+\))?)|								# e.g. 2012
@@ -89,7 +93,62 @@ MAX_ATTEMPTS = 3
 
 logging.basicConfig(level='INFO')
 
-def get_car_data() -> Dict[str, Union[int, str]]:
+def scrape_listing(car_listing: et.ElementBase) -> Dict[str, Union[int, str]]:
+	'''This function takes a car listing LXML object and gathers info from it
+	car_listing: An LXML element to grab the data from
+	returns: A dict of data about the advert'''
+
+	# the li itself contains some interesting info, fetch that first
+	attrs = dict(car_listing.attrib)
+
+	# get the article and contained within the li
+	# use it to decide if the entry is an ad
+	advert_article = car_listing.find('article')
+	if advert_article.attrib.get("data-standout-type", None) == "promoted":
+		LOGGER.debug('Ignoring advert for id %s', attrs.get('id', 'unknown'))
+		return {} 
+
+	# get the link to the actual page
+	advert_path = advert_article.find('a').attrib['href']
+	full_advert_path = urljoin(BASE_URL, advert_path)
+	truncated_advert_path, _ = str(full_advert_path).split('?', maxsplit=1)
+	LOGGER.debug('Advert path is: %s', truncated_advert_path)
+
+	# get the price
+	price_str = car_listing.find('.//div[@class="product-card-pricing__price"]/span').text
+	price = PRICE_STR_TO_INT(price_str)
+	LOGGER.debug('Price is %d', price)
+
+	# get the title
+	title = car_listing.find('.//h3[@class="product-card-details__title"]').text
+	title = CONVERT_TO_STR_AND_STRIP(title)
+	LOGGER.debug('Title is %s', title)
+
+	# then gather this info 
+	car_key_spec_dict: Dict[str, Union[str, int]] = {
+		'title': title,
+		'price': price,
+		'url': truncated_advert_path
+	}
+
+	# iterate over keys specs and add to dict
+	for key_spec in car_listing.xpath('.//ul[@class="listing-key-specs"]/li/text()'):
+
+		# try and match, but fail gracefully
+		m = SPEC_RE.fullmatch(key_spec)
+		if m is None:
+			LOGGER.warning('Did not match a spec for "%s"', key_spec)
+			return {} 
+		
+		# if there was a match, convert the raw text, add to dict
+		LOGGER.debug('%s matches %s', key_spec, m.lastgroup)
+		conv = CONVERTERS.get(m.lastgroup, CONVERT_TO_STR_AND_STRIP)
+		car_key_spec_dict[m.lastgroup] = conv(m.groupdict()[m.lastgroup])
+
+	return car_key_spec_dict
+
+def scrape_page():
+
 	pass
 
 
@@ -99,12 +158,6 @@ def scrape(year: int, others: Dict[str, Any]):
 	It is intended to be a helper function 
 	year: The year  '''
 
-	LOGGER.info('%d', year)
-
-	# root urls
-	base_url = "https://www.autotrader.co.uk"
-	base_search_url = urljoin(base_url, "results-car-search")
-	
 	parser = et.HTMLParser()
 
 	car_data: List[Dict[Any, Any]] = []
@@ -133,7 +186,7 @@ def scrape(year: int, others: Dict[str, Any]):
 
 			# issue request and see if all good
 			params["page"] = page
-			resp = scraper.get(base_search_url, params=params)
+			resp = scraper.get(BASE_SEARCH_URL, params=params)
 			LOGGER.info('Scrape page %d, attempt %d, status = %d', page, attempt, resp.status_code)
 
 			# if the request was a failure, retry by jumping to the start of the loop
@@ -156,59 +209,7 @@ def scrape(year: int, others: Dict[str, Any]):
 			LOGGER.info('Got %d adverts', len(car_lis))
 
 			# iterate over the found cars, grab the data from them
-			for car_li in car_lis:
-
-				# the li itself contains some interesting info, fetch that first
-				attrs = dict(car_li.attrib)
-
-				# get the article and contained within the li
-				# use it to decide if the entry is an ad
-				advert_article = car_li.find('article')
-				if advert_article.attrib.get("data-standout-type", None) == "promoted":
-					LOGGER.debug('Ignoring advert for id %s', attrs.get('id', 'unknown'))
-					continue
-
-				# get the link to the actual page
-				advert_path = advert_article.find('a').attrib['href']
-				full_advert_path = urljoin(base_url, advert_path)
-				truncated_advert_path, _ = str(full_advert_path).split('?', maxsplit=1)
-				LOGGER.debug('Advert path is: %s', truncated_advert_path)
-
-				# get the price
-				price_str = car_li.find('.//div[@class="product-card-pricing__price"]/span').text
-				price = PRICE_STR_TO_INT(price_str)
-				LOGGER.debug('Price is %d', price)
-
-				# get the title
-				title = car_li.find('.//h3[@class="product-card-details__title"]').text
-				title = CONVERT_TO_STR_AND_STRIP(title)
-				LOGGER.debug('Title is %s', title)
-
-				# then gather this info 
-				car_key_spec_dict: Dict[str, Union[str, int]] = {
-					'title': title,
-					'price': price,
-					'url': truncated_advert_path
-				}
-
-				# iterate over keys specs and add to dict
-				for key_spec in car_li.xpath('.//ul[@class="listing-key-specs"]/li/text()'):
-
-					# try and match, but fail gracefully
-					m = SPEC_RE.fullmatch(key_spec)
-					if m is None:
-						LOGGER.warning('Did not match a spec for "%s"', key_spec)
-						continue 
-					
-					# if there was a match, convert the raw text, add to dict
-					LOGGER.debug('%s matches %s', key_spec, m.lastgroup)
-					conv = CONVERTERS.get(m.lastgroup, CONVERT_TO_STR_AND_STRIP)
-					car_key_spec_dict[m.lastgroup] = conv(m.groupdict()[m.lastgroup])
-
-				car_data.append(car_key_spec_dict)
-				LOGGER.debug('Final dict: %s', car_key_spec_dict)
-
-			# break out of the attempt loop
+			car_data.extend( scrape_listing(li) for li in car_lis )
 			break
 
 		else:
