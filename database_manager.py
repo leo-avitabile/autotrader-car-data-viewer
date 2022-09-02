@@ -2,6 +2,7 @@ import datetime
 import json
 import os
 import pathlib
+from typing import Dict, Union
 
 import pandas as pd
 import logging
@@ -24,7 +25,7 @@ def string_md5(string_to_hash: str) -> str:
 
 class DatabaseManager:
 
-    def __init__(self, path='autotrader_cache4.json'):
+    def __init__(self, path='autotrader_cache5.json'):
         # open and load the data if it exists
         self.path = path
         self.current_data = {}
@@ -42,7 +43,7 @@ class DatabaseManager:
     def append_snapshot(self, df: pd.DataFrame) -> None:
         start = datetime.datetime.now()
         # generate hashes for all of the rows in the df
-        df['hash'] = df['link'].apply(string_md5)
+        df['hash'] = df['url'].apply(string_md5)
         LOGGER.debug(f'append_snapshot called on {len(df)} objects')
 
         # get the car make/model, convert to lowercase to ensure that weird user input is always filed away safely
@@ -135,7 +136,7 @@ class DatabaseManager2:
     def append_snapshot(self, df: pd.DataFrame) -> None:
         self.conn = sqlite3.connect(self.DB_FILE_NAME)
         self.cursor = self.conn.cursor()
-        df['hash'] = df['link'].apply(string_md5)
+        df['hash'] = df['url'].apply(string_md5)
         LOGGER.debug(f'append_snapshot called on {len(df)} objects')
         df.to_sql('df', self.conn, if_exists='append')
         self.conn.commit()
@@ -167,7 +168,7 @@ class DatabaseManager3:
     def append_snapshot(self, df: pd.DataFrame) -> None:
         start = datetime.datetime.now()
         # generate hashes for all of the rows in the df
-        df['hash'] = df['link'].apply(string_md5)
+        df['hash'] = df['url'].apply(string_md5)
         LOGGER.debug(f'append_snapshot called on {len(df)} objects')
 
         # get the car make/model, convert to lowercase to ensure that weird user input is always filed away safely
@@ -201,32 +202,32 @@ class DatabaseManager3:
 
         for _, row in df.iterrows():
 
-            hash_val = row['hash']
-            name = row['name']
+            hash_val: str = row['hash']
+            title: str = row['title']
 
             if hash_val in hashes:
-                LOGGER.debug(f'append_snapshot updating "last_seen" attrib of {name} to {now}')
+                LOGGER.debug(f'append_snapshot updating "last_seen" attrib of {title} to {now}')
                 hashes[hash_val]['last_seen'] = now
                 for k, v in json.loads(row.to_json()).items():
                     if k not in hashes[hash_val]:
                         # assert type(v) in (int, str)  # Todo: Saw a NoneType here once. Maybe fix that
                         hashes[hash_val][k] = v.lower() if type(v) is str else v
             else:
-                LOGGER.debug(f'append_snapshot adding entry: {name}')
+                LOGGER.debug(f'append_snapshot adding entry: {title}')
                 data = json.loads(row.to_json())
                 data['first_seen'] = now
                 current_data[model].append(data)
 
         after_update = datetime.datetime.now()
-        LOGGER.debug('Update took', (after_update - start).total_seconds(), 's')
+        LOGGER.debug('Update took %ss', (after_update - start).total_seconds())
 
         with open(self.file_paths_by_brand[make], 'w') as f:
             json.dump(current_data, f, indent=2)
 
         after_save = datetime.datetime.now()
-        LOGGER.debug('Save took', (after_save - after_update).total_seconds(), 's')
+        LOGGER.debug('Save took %ss', (after_save - start).total_seconds())
 
-    def fetch(self, make, model, **extras):
+    def fetch(self, make: str, model: str, **extras: Dict[str, Union[str, int]]):
         make_lower = make.lower()
         model_lower = model.lower()
         if make_lower in self.file_paths_by_brand:
@@ -269,5 +270,5 @@ class DatabaseManager3:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
     manager = DatabaseManager3()
-    df = pd.DataFrame.from_dict([{'link': '1234'}])
+    df = pd.DataFrame.from_dict([{'url': '1234'}])
     manager.append_snapshot(df)

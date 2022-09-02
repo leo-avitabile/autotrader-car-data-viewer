@@ -10,7 +10,9 @@ from time import sleep
 LOGGER = logging.getLogger(__name__)
 STATUS_CODE_SUCCESS = 200
 
-def get_cars(make="BMW", model="5 SERIES", postcode="SW1A 0AA", radius=1500, min_year=1995, max_year=1995, trim=None, fuel=None, min_power=None, max_power=None, colour=None, include_writeoff="include", max_attempts_per_page=5, verbose=False):
+def get_cars(make="BMW", model="5 SERIES", postcode="SW1A 0AA", radius=1500, min_year=1995, max_year=1995,
+			 max_miles=None, trim=None, fuel=None, min_power=None, max_power=None, colour=None,
+			 include_writeoff="include", max_attempts_per_page=5, verbose=False):
 
 	# To bypass Cloudflare protection
 	scraper = cloudscraper.create_scraper()
@@ -60,6 +62,9 @@ def get_cars(make="BMW", model="5 SERIES", postcode="SW1A 0AA", radius=1500, min
 	if colour:
 		params['colour'] = colour
 
+	if max_miles:
+		params['maximum-mileage'] = max_miles
+
 	if (include_writeoff == "include"):
 		params["writeoff-categories"] = "on"
 	elif (include_writeoff == "exclude"):
@@ -96,6 +101,7 @@ def get_cars(make="BMW", model="5 SERIES", postcode="SW1A 0AA", radius=1500, min
 			try:
 
 				if r.status_code != STATUS_CODE_SUCCESS: # if not successful (e.g. due to bot protection), log as an attempt
+					print('Got bad code %d, retrying', r.status_code)
 					attempt = attempt + 1
 					if attempt <= max_attempts_per_page:
 						if verbose:
@@ -214,3 +220,27 @@ def save_csv(results = [], filename = "scraper_output.csv"):
 def save_json(results = [], filename = "scraper_output.json"):
 	with open(filename, 'w') as f:
 		json.dump(results, f, sort_keys=True, indent=4, separators=(',', ': '))
+
+		
+if __name__ == "__main__":
+	from datetime import datetime
+	start = datetime.now()
+	r = get_cars(
+		make = "Lexus", 
+		model = "IS 300", 
+		postcode = "GL503PY", 
+		radius=1500, 
+		min_year=2010, 
+		max_year=2022,
+		max_miles=None, 
+		trim=None, 
+		fuel=None, 
+		min_power=None, 
+		max_power=None, 
+		colour=None,
+		# include_writeoff="exclude"
+		)
+	end = datetime.now()
+	ts = (end - start).total_seconds()
+	print(f'Took {ts} s')
+	print(len(r))
