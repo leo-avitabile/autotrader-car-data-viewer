@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from PySide2 import QtCore, QtWidgets  # Downgraded to PySide2 (Qt5) for proper matplotlib compatibility
 from PySide2.QtCore import QAbstractTableModel
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg, NavigationToolbar2QT 
 import numpy as np
 
 import database_manager
@@ -270,11 +270,19 @@ class MyWidget(QtWidgets.QWidget):
         self.new_cars_only_checkbox.setText('Only Show Cars Added Today')
         self.new_cars_only_checkbox.stateChanged.connect(self.update_graph)
         self.layout.addWidget(self.new_cars_only_checkbox)
+        
+        self.exclude_outliers_checkbox = QtWidgets.QCheckBox()
+        self.exclude_outliers_checkbox.setText('Exclude Anomalously Priced Cars')
+        self.exclude_outliers_checkbox.stateChanged.connect(self.update_graph)
+        self.layout.addWidget(self.exclude_outliers_checkbox)
 
         # for drawing graph in the main window
         self.figure = plt.figure()
         self.canvas = FigureCanvasQTAgg(self.figure)
         self.layout.addWidget(self.canvas)
+
+        toolbar = NavigationToolbar2QT (self.canvas, self)
+        self.layout.addWidget(toolbar)
 
         # bind the event for when someone clicks on the graph and render
         self.figure.canvas.mpl_connect("pick_event", self.on_pick)
@@ -329,7 +337,7 @@ class MyWidget(QtWidgets.QWidget):
         # filter to searched years
         stored_df = self.stored_df[(self.stored_df['year'] >= search_min_year) & (self.stored_df['year'] <= search_max_year)]
 
-        mean_price = stored_df.groupby(['year'])['price'].mean()
+        means = stored_df.groupby(['year']).mean()
 
         # filter to cars added today only if asked to
         if self.new_cars_only_checkbox.checkState() == Qt.CheckState.Checked:
@@ -337,6 +345,12 @@ class MyWidget(QtWidgets.QWidget):
 
         # prune cols and rows with nan fields and extraneous cols
         stored_df = stored_df[cols_to_keep].dropna(how='any', axis=0)
+
+        # filter out very expensive cars relative to some average
+        # choose mean for now
+        stored_df = stored_df.join(means, on='year', how='left', rsuffix='_grp_mean')
+        if (self.exclude_outliers_checkbox.isChecked()):
+            stored_df = stored_df[ stored_df['price'] < (stored_df['price_grp_mean'] * 2) ]
 
         # generate filter to split df into sold and available cars
         # note: assume sold to mean exists in the database but not in the scrape
@@ -363,9 +377,9 @@ class MyWidget(QtWidgets.QWidget):
         sold_scatter = partial(ax.scatter, x=sold_cars['year'], y=sold_cars['price'], marker='x')
 
         # compute means and standard deviations (stds) per year and append those to avail_cars
-        means_df = avail_cars.groupby(['year']).mean()
+        # means_df = avail_cars.groupby(['year']).mean()
         stds_df = avail_cars.groupby(['year']).std()
-        avail_cars = avail_cars.join(means_df, on='year', how='left', rsuffix='_grp_mean')
+        # avail_cars = avail_cars.join(means_df, on='year', how='left', rsuffix='_grp_mean')
         avail_cars = avail_cars.join(stds_df, on='year', how='left', rsuffix='_grp_std')
 
         # compute per-year z-score of miles and price
@@ -393,7 +407,7 @@ class MyWidget(QtWidgets.QWidget):
         self.avail_scatter = avail_scatter()
 
         # compute mean price of the cars per year and plot
-        ax.plot(mean_price)
+        ax.plot(means['price'])
 
         # Set graph labels, ticks, and other visual elements
         ax.set_xticks(year_range)
